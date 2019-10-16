@@ -1,45 +1,80 @@
 #!/bin/bash
 set -e
-
+BASEDIR=$(dirname "$0")
 PARCEL=${1:-CDH_PYTHON-0.0.1.p0}
 PARCEL_NAME=${PARCEL%%-*}
 PARCEL_VERSION=${PARCEL#*-}
-CONDA_URI=${2:-https://repo.continuum.io/miniconda/Miniconda2-4.3.30-Linux-x86_64.sh}
-CDSW_ENGINE=${3:-docker.repository.cloudera.com/cdsw/engine:3}
-PARCEL_DIR=${4:-/opt/cloudera/parcels}
+CONDA_URI=https://repo.anaconda.com/archive/Anaconda2-2019.07-Linux-x86_64.sh
+PARCEL_DIR=/app/cloudera/parcels
+PYTHON2_VERSION=2.7
+PYTHON3_VERSION=3.6
+TARGET_OS=centos7
+OS_VERSION=el7
 
 CONDA_VERSION=$(echo $CONDA_URI | cut -d - -f 2)
 
-if [[ -z "${PYTHON2_VERSION}" && -z "${PYTHON3_VERSION}" ]]; then
-    echo "Extracting CDSW python information"
-    source extract_cdsw_python.sh $CDSW_ENGINE
-else
-    echo "Using the following python versions:"
-    echo "Python2: $PYTHON2_VERSION"
-    echo "Python3: $PYTHON3_VERSION"
-fi
-
-PARCEL_VERSION="${PARCEL_VERSION}-miniconda2_${CONDA_VERSION}-py2_${PYTHON2_VERSION}-py3_${PYTHON3_VERSION}"
+PARCEL_VERSION="${PARCEL_VERSION}-anaconda3_${CONDA_VERSION}-py2_${PYTHON2_VERSION}-py3_${PYTHON3_VERSION}"
 
 echo "Building ${PARCEL_NAME} parcel version ${PARCEL_VERSION} including python ${PYTHON2_VERSION} and ${PYTHON3_VERSION} \
-using ${CONDA_URI} with PREFIX $PARCEL_DIR/$PARCEL_NAME-$PARCEL_VERSION"
+using ${CONDA_URI} with PREFIX ${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}"
+
+echo "Delete ${PARCEL_NAME}-${PARCEL_VERSION} parcel directory"
+rm -rf ${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}
+
+echo "Delete target directory"
+rm -rf ${BASEDIR}/target
 
 echo "Create target directory"
-mkdir -p ./target
+mkdir -p ${BASEDIR}/target
 
 # RHEL/CentOS
-./extract_from_docker.sh $PARCEL_VERSION centos centos7 el7 $CONDA_URI $PYTHON2_VERSION $PYTHON3_VERSION $PARCEL_NAME $PARCEL_DIR
-./extract_from_docker.sh $PARCEL_VERSION centos centos6 el6 $CONDA_URI $PYTHON2_VERSION $PYTHON3_VERSION $PARCEL_NAME $PARCEL_DIR
-# Ubuntu
-./extract_from_docker.sh $PARCEL_VERSION ubuntu trusty trusty $CONDA_URI $PYTHON2_VERSION $PYTHON3_VERSION $PARCEL_NAME $PARCEL_DIR
-./extract_from_docker.sh $PARCEL_VERSION ubuntu xenial xenial $CONDA_URI $PYTHON2_VERSION $PYTHON3_VERSION $PARCEL_NAME $PARCEL_DIR
-# Debian
-./extract_from_docker.sh $PARCEL_VERSION debian jessie jessie $CONDA_URI $PYTHON2_VERSION $PYTHON3_VERSION $PARCEL_NAME $PARCEL_DIR
-./extract_from_docker.sh $PARCEL_VERSION debian wheezy wheezy $CONDA_URI $PYTHON2_VERSION $PYTHON3_VERSION $PARCEL_NAME $PARCEL_DIR
+IMAGE_NAME=$(echo ${PARCEL_NAME} | tr '[:upper:]' '[:lower:]')
 
-# Create manifest.json
+echo "Creating parcel: ${PARCEL_NAME}-${PARCEL_VERSION}-${OS_VERSION}.parcel"
+
+yum install -y bzip2
+
+mkdir -p ${PARCEL_DIR}
+CONDA_EXECUTABLE=$(basename ${CONDA_URI})
+curl -O ${CONDA_URI}
+sh ${CONDA_EXECUTABLE} -b -p ${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}
+rm -f ${CONDA_EXECUTABLE}
+export PATH=${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}/bin:$PATH
+conda create -y -q -n python2 python=$PYTHON2_VERSION
+conda create -y -q -n python3 python=$PYTHON3_VERSION
+
+mkdir -p ${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}/{lib,meta}
+
+echo "Create ${PARCEL_NAME}-${PARCEL_VERSION}/meta/parcel.json"
+cp ${BASEDIR}/source/meta/* ${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}/meta/
+sed -i \
+-e "s/__OS_VERSION__/${OS_VERSION}/g" \
+-e "s/__PARCEL_VERSION__/${PARCEL_VERSION}/g" \
+-e "s/__PARCEL_NAME__/${PARCEL_NAME}/g" \
+${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}/meta/parcel.json
+
+echo "Create ${PARCEL_NAME}-${PARCEL_VERSION}/meta/py_env.sh"
+sed -i \
+-e "s/__OS_VERSION__/${OS_VERSION}/g" \
+-e "s/__PARCEL_VERSION__/${PARCEL_VERSION}/g" \
+-e "s/__PARCEL_NAME__/${PARCEL_NAME}/g" \
+${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}/meta/py_env.sh
+
+echo "Create ${PARCEL_NAME}-${PARCEL_VERSION}-${OS_VERSION}.parcel"
+tar -C ${PARCEL_DIR} -czf ${PARCEL_NAME}-${PARCEL_VERSION}-${OS_VERSION}.parcel ${PARCEL_NAME}-${PARCEL_VERSION} --owner=root --group=root && \
+rm -rf ${PARCEL_DIR}/${PARCEL_NAME}-${PARCEL_VERSION}
+
+mv ${PARCEL_NAME}-${PARCEL_VERSION}-${OS_VERSION}.parcel ${BASEDIR}/target
+
 echo "Create manifest.json"
-python ./lib/make_manifest.py ./target
+python ${BASEDIR}/lib/make_manifest.py ${BASEDIR}/target
 
 echo "Update index.html"
-python ./lib/create_index.py ./target
+python ${BASEDIR}/lib/create_index.py ${BASEDIR}/target
+
+echo "Validation"
+java -jar lib/validator.jar -f ${BASEDIR}/target/${PARCEL_NAME}-${PARCEL_VERSION}-${OS_VERSION}.parcel
+
+echo "Successfully created ${PARCEL_NAME}-${PARCEL_VERSION}-${OS_VERSION}.parcel"
+
+
